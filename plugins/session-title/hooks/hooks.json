@@ -1,0 +1,17 @@
+{
+  "description": "UserPromptSubmit hook that auto-generates a kebab-case session title via Haiku on the first prompt of each session. One-shot, recursion-safe, slugified-prompt fallback.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-title.sh",
+            "timeout": 25000,
+            "statusMessage": "Generating session title..."
+          }
+        ]
+      }
+    ]
+  }
+}

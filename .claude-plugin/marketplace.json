@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-session-title",
+  "version": "1.0.0",
+  "description": "Auto-name every Claude Code session: on the first prompt, Haiku summarizes your request into a kebab-case title and the session pill renames itself.",
+  "owner": {
+    "name": "Thomas Tiotto"
+  },
+  "plugins": [
+    {
+      "name": "session-title",
+      "description": "UserPromptSubmit hook that synchronously calls Haiku on the first prompt of each session and emits a kebab-case title via hookSpecificOutput.sessionTitle. One-shot per session (marker-file guarded), recursion-safe, 20s timeout with a slugified-prompt fallback. ~9s added to prompt 1; zero overhead after.",
+      "source": "./plugins/session-title",
+      "category": "productivity"
+    }
+  ]
+}

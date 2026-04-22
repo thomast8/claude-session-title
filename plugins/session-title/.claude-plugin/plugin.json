@@ -1,0 +1,8 @@
+{
+  "name": "session-title",
+  "version": "1.0.0",
+  "description": "Synchronous Haiku-generated kebab-case session titles, emitted via hookSpecificOutput.sessionTitle on the first prompt of each Claude Code session. One-shot per session, recursion-safe, 20s timeout with a slugified-prompt fallback.",
+  "author": {
+    "name": "Thomas Tiotto"
+  }
+}
