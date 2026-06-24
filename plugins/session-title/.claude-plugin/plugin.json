@@ -1,7 +1,7 @@
 {
   "name": "session-title",
-  "version": "1.0.0",
-  "description": "Synchronous Haiku-generated kebab-case session titles, emitted via hookSpecificOutput.sessionTitle on the first prompt of each Claude Code session. One-shot per session, recursion-safe, 20s timeout with a slugified-prompt fallback.",
+  "version": "2.0.0",
+  "description": "Auto-names each Claude Code session with a kebab-case Haiku title. A Stop hook spawns a detached background worker after the first assistant turn (zero prompt latency, no hook-timeout race) that titles off both prompt and reply and writes a custom-title record to the transcript. One-shot per session, recursion-safe, slugified-prompt fallback.",
   "author": {
     "name": "Thomas Tiotto"
   }

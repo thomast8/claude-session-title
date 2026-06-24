@@ -1,75 +1,87 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook: on the very first prompt of each session,
-# synchronously call Haiku via `claude -p` to generate a kebab-case
-# title for the user's request, and emit it as sessionTitle in the
-# hook's JSON output. The harness only honours sessionTitle on the
-# first hook invocation per session, so this is our one shot. User
-# pays ~9-10s on the first prompt; subsequent prompts have no latency.
+# Stop hook (dispatcher): on the first assistant turn of each session,
+# spawn a detached background worker that generates a kebab-case title
+# via Haiku and writes it to the session transcript. The dispatcher
+# itself returns in <1s and never blocks, so the user pays zero latency
+# and there is no hook-timeout race (the old synchronous UserPromptSubmit
+# design could be killed mid `claude -p`, ceding to Claude Code's raw
+# default title).
 #
-# If the Haiku call fails or times out, we fall back to a slugified
-# truncation of the prompt so the title still populates with
-# something reasonable.
+# A Stop hook cannot emit hookSpecificOutput.sessionTitle (that field is
+# honoured only on the first UserPromptSubmit). Instead the worker sets
+# the title the same way `/rename` does: by appending a custom-title
+# record to the transcript .jsonl. See title-worker.sh.
 #
-# Recursion safety: the `claude -p` call fires UserPromptSubmit for
-# its own prompt, which re-invokes THIS script. The inner invocation
-# short-circuits on CLAUDE_TITLE_HOOK_NESTED=1 in the environment.
+# Recursion safety: the worker's own `claude -p` call fires a Stop hook
+# for its throwaway session, re-invoking THIS script. The inner
+# invocation short-circuits on CLAUDE_TITLE_HOOK_NESTED=1, which the
+# dispatcher exports when spawning the worker.
 #
-# State: one empty marker file per session at
-#   $TMPDIR/claude-session-titles/<session-id>.done
-# tracks whether we've already taken our one sessionTitle shot.
+# State: one marker file per session at
+#   $TMPDIR/claude-session-titles/<session-id>
+# whose contents are "pending" (worker spawned) or "done" (titled).
 
 set -euo pipefail
 
+emit_continue() {
+  printf '%s\n' '{"continue":true,"suppressOutput":true}'
+}
+
+# Re-entrant guard: the worker's `claude -p` triggers a nested Stop hook.
 if [[ "${CLAUDE_TITLE_HOOK_NESTED:-0}" == "1" ]]; then
-  echo '{}'
+  emit_continue
   exit 0
 fi
 
 input=$(cat)
 session_id=$(printf '%s' "$input" | jq -r '.session_id // empty')
-prompt=$(printf '%s' "$input" | jq -r '.prompt // empty')
+transcript_path=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
+cwd=$(printf '%s' "$input" | jq -r '.cwd // empty')
 
-emit_with_title() {
-  jq -n --arg t "$1" \
-    '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",sessionTitle:$t}}'
-}
+if [[ -z "$session_id" ]]; then
+  emit_continue
+  exit 0
+fi
 
-emit_empty() {
-  echo '{}'
-}
+# Fall back to deriving the transcript path from cwd if the hook input
+# omitted it (cwd with every "/" turned into "-" is the project dir).
+if [[ -z "$transcript_path" && -n "$cwd" ]]; then
+  project_dir="${cwd//\//-}"
+  transcript_path="${HOME}/.claude/projects/${project_dir}/${session_id}.jsonl"
+fi
 
-slugify() {
-  printf '%s' "$1" \
-    | tr '[:upper:]' '[:lower:]' \
-    | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
-    | cut -c1-50 \
-    | sed -E 's/-+$//'
-}
-
-if [[ -z "$session_id" || -z "$prompt" ]]; then
-  emit_empty
+if [[ -z "$transcript_path" || ! -f "$transcript_path" ]]; then
+  emit_continue
   exit 0
 fi
 
 state_dir="${TMPDIR:-/tmp}/claude-session-titles"
 mkdir -p "$state_dir"
-marker="${state_dir}/${session_id}.done"
+marker="${state_dir}/${session_id}"
 
+# Already named, or a worker is still in flight (pending and fresh): no-op.
 if [[ -f "$marker" ]]; then
-  emit_empty
-  exit 0
+  marker_state=$(cat "$marker" 2>/dev/null || true)
+  if [[ "$marker_state" == "done" ]]; then
+    emit_continue
+    exit 0
+  fi
+  # "pending" but recent -> assume the worker is still running. Only
+  # respawn if the marker is stale (worker likely died before finishing).
+  marker_mtime=$(stat -f %m "$marker" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  if (( now - marker_mtime < 90 )); then
+    emit_continue
+    exit 0
+  fi
 fi
 
-: > "$marker"
+printf 'pending' > "$marker"
 
-title=""
-if command -v claude >/dev/null 2>&1; then
-  llm_prompt="Output only a kebab-case title (3-5 lowercase words, hyphen-separated, no punctuation, no quotes, no explanation) that summarizes what this user request is about. Request: ${prompt}"
-  llm_out=$(CLAUDE_TITLE_HOOK_NESTED=1 perl -e 'alarm shift @ARGV; exec @ARGV' 20 claude -p --model haiku --no-session-persistence "$llm_prompt" 2>/dev/null | grep -v '^$' | head -n 1 || true)
-  title=$(slugify "$llm_out")
-fi
+worker="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/title-worker.sh"
+CLAUDE_TITLE_HOOK_NESTED=1 nohup bash "$worker" "$session_id" "$transcript_path" \
+  >/dev/null 2>&1 &
+disown
 
-[[ -z "$title" ]] && title=$(slugify "$prompt")
-[[ -z "$title" ]] && title="untitled"
-
-emit_with_title "$title"
+emit_continue
+exit 0
