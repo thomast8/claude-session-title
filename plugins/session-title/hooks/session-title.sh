@@ -79,9 +79,25 @@ fi
 printf 'pending' > "$marker"
 
 worker="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/title-worker.sh"
-CLAUDE_TITLE_HOOK_NESTED=1 nohup bash "$worker" "$session_id" "$transcript_path" \
-  >/dev/null 2>&1 &
-disown
+
+# Detach the worker into its OWN session, not just the background. The worker
+# runs `claude -p` (~10-15s) which OUTLASTS this Stop hook's timeout. Claude
+# Code reaps a finished/timed-out hook by killing its whole process group, so
+# `nohup ... & disown` is NOT enough: disown only drops the job from the
+# shell's table while the worker stays in the hook's process group and dies
+# with it, leaving the session untitled. fork -> parent exits -> child
+# setsid() puts the worker in a fresh session that the group-kill can't reach.
+# (macOS has no `setsid` binary, so we use perl, which the worker needs anyway.)
+CLAUDE_TITLE_HOOK_NESTED=1 perl -e '
+  use POSIX qw(setsid);
+  my $pid = fork();
+  exit 0 if $pid;                 # dispatcher returns immediately
+  POSIX::setsid();                # detach: new session, immune to pgroup kill
+  open(STDIN,  "<", "/dev/null");
+  open(STDOUT, ">", "/dev/null");
+  open(STDERR, ">", "/dev/null");
+  exec @ARGV or exit 127;
+' bash "$worker" "$session_id" "$transcript_path"
 
 emit_continue
 exit 0
